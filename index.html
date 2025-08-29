@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Pesulap Scanner</title>
+  <title>Pesulap Scanner AutoCrop</title>
   <style>
     :root{--bg:#0f172a;--card:#0b1220;--accent:#06b6d4;--muted:#94a3b8;color-scheme:dark}
     body{font-family:system-ui,Segoe UI,Roboto,Helvetica,Arial; margin:0;background:linear-gradient(180deg,#021025 0%, #041428 100%);color:#e6eef6}
@@ -14,7 +14,7 @@
     .btn{background:var(--accent);color:#021022;padding:8px 12px;border-radius:8px;border:0;cursor:pointer}
     .btn.secondary{background:#0a2740;color:#cfeefa}
     .card{background:rgba(255,255,255,0.03);padding:12px;border-radius:12px;margin-top:12px}
-    #video{width:320px;border-radius:8px}
+    #video{width:320px;border-radius:8px;display:block;margin-bottom:8px}
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin-top:10px}
     .thumb{position:relative;border-radius:8px;overflow:hidden;background:#061226}
     .thumb img{width:100%;height:100%;object-fit:cover;display:block}
@@ -24,14 +24,15 @@
     .hint{color:var(--muted);font-size:13px}
     footer{margin-top:18px;color:var(--muted);font-size:13px}
   </style>
+  <script async src="https://docs.opencv.org/4.x/opencv.js"></script>
 </head>
 <body>
   <div class="wrap">
     <header>
       <img src="" alt="" style="width:44px;height:44px;border-radius:8px;background:linear-gradient(90deg,#06b6d4,#7c3aed)">
       <div>
-        <h1>Pesulap Scanner</h1>
-        <div class="hint">Scan beberapa foto, export JPG, dan share (Web Share API jika tersedia)</div>
+        <h1>Pesulap Scanner AutoCrop</h1>
+        <div class="hint">Scan nota, auto-crop dengan OpenCV.js</div>
       </div>
     </header>
 
@@ -42,7 +43,6 @@
       </label>
 
       <button id="startCam" class="btn secondary">Buka Kamera</button>
-      <button id="capture" class="btn" disabled>Ambil Foto</button>
       <button id="exportJpg" class="btn" disabled>Export JPG</button>
       <button id="shareNow" class="btn" disabled>Share</button>
     </div>
@@ -50,7 +50,8 @@
     <div style="display:flex;gap:12px;align-items:flex-start;flex-wrap:wrap">
       <div class="card">
         <video id="video" autoplay playsinline muted></video>
-        <div class="hint" style="margin-top:8px">Jika membuka di perangkat mobile, izinkan akses kamera. Untuk desktop, kamera tersedia jika device punya webcam.</div>
+        <button id="capture" class="btn" disabled>Ambil Foto</button>
+        <div class="hint">Izinkan akses kamera untuk memotret nota.</div>
       </div>
 
       <div style="flex:1;min-width:280px">
@@ -61,22 +62,12 @@
             <button id="clearAll" class="btn secondary" disabled>Hapus Semua</button>
           </div>
         </div>
-
-        <div class="card" style="margin-top:12px">
-          <strong>Catatan</strong>
-          <ul>
-            <li>Export menghasilkan file JPG dan juga ZIP untuk unduhan massal.</li>
-            <li>Fitur Share menggunakan <code>navigator.share()</code> (tersedia di Chrome mobile & beberapa browser lain).</li>
-            <li>Kalau share gagal, gunakan tombol Export lalu bagikan manual ke Telegram/WhatsApp.</li>
-          </ul>
-        </div>
       </div>
     </div>
 
-    <footer>Created for you — gunakan di Chrome (HTTPS diperlukan untuk kamera & share).</footer>
+    <footer>Created for you — gunakan di Chrome (HTTPS diperlukan untuk kamera & auto-crop).</footer>
   </div>
 
-  <!-- JSZip untuk ZIP export -->
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.0/dist/jszip.min.js"></script>
   <script>
     const fileInput = document.getElementById('fileInput')
@@ -135,66 +126,85 @@
         video.srcObject = stream
         startCamBtn.textContent='Tutup Kamera'
         captureBtn.disabled = false
-      }catch(err){
-        alert('Gagal mengakses kamera: '+err.message)
-      }
+      }catch(err){ alert('Gagal mengakses kamera: '+err.message) }
     })
 
     captureBtn.addEventListener('click', ()=>{
       if(!stream) return
-      const w = video.videoWidth || 1280
-      const h = video.videoHeight || 720
+      const w = video.videoWidth
+      const h = video.videoHeight
       const canvas = document.createElement('canvas')
-      canvas.width = w
-      canvas.height = h
+      canvas.width = w; canvas.height = h
       const ctx = canvas.getContext('2d')
       ctx.drawImage(video, 0, 0, w, h)
-      canvas.toBlob(blob => {
-        const name = `scan_${Date.now()}.jpg`
-        const reader = new FileReader()
-        reader.onload = e=>{
-          images.push({blob, name, dataUrl: e.target.result})
-          updateUI()
+      let src = cv.imread(canvas)
+      let gray = new cv.Mat(), blur = new cv.Mat(), edges = new cv.Mat()
+      cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY, 0)
+      cv.GaussianBlur(gray, blur, new cv.Size(5,5), 0)
+      cv.Canny(blur, edges, 75, 200)
+      let contours = new cv.MatVector(), hierarchy = new cv.Mat()
+      cv.findContours(edges, contours, hierarchy, cv.RETR_LIST, cv.CHAIN_APPROX_SIMPLE)
+      let maxArea = 0, approx, bestCnt
+      for(let i=0;i<contours.size();i++){
+        let cnt = contours.get(i)
+        let peri = cv.arcLength(cnt, true)
+        let approxCurve = new cv.Mat()
+        cv.approxPolyDP(cnt, approxCurve, 0.02*peri, true)
+        if(approxCurve.rows === 4){
+          let area = cv.contourArea(cnt)
+          if(area > maxArea){ maxArea = area; approx = approxCurve; bestCnt = cnt }
         }
+      }
+      let resultCanvas = document.createElement('canvas')
+      if(approx){
+        let pts = []
+        for(let i=0;i<4;i++){ pts.push({x:approx.intPtr(i,0)[0], y:approx.intPtr(i,0)[1]}) }
+        pts.sort((a,b)=>a.y-b.y)
+        let top = pts.slice(0,2).sort((a,b)=>a.x-b.x)
+        let bottom = pts.slice(2,4).sort((a,b)=>a.x-b.x)
+        let ordered = [top[0], top[1], bottom[1], bottom[0]]
+        let dstCoords = cv.matFromArray(4,1,cv.CV_32FC2,[0,0, w,0, w,h, 0,h])
+        let srcCoords = cv.matFromArray(4,1,cv.CV_32FC2,[ordered[0].x,ordered[0].y, ordered[1].x,ordered[1].y, ordered[2].x,ordered[2].y, ordered[3].x,ordered[3].y])
+        let M = cv.getPerspectiveTransform(srcCoords, dstCoords)
+        let dst = new cv.Mat()
+        cv.warpPerspective(src, dst, M, new cv.Size(w,h))
+        cv.imshow(resultCanvas, dst)
+        dst.delete(); M.delete(); srcCoords.delete(); dstCoords.delete()
+      }else{
+        // fallback: gunakan hasil normal
+        cv.imshow(resultCanvas, src)
+      }
+      let name = `scan_${Date.now()}.jpg`
+      resultCanvas.toBlob(blob=>{
+        const reader = new FileReader()
+        reader.onload = e=>{ images.push({blob, name, dataUrl:e.target.result}); updateUI() }
         reader.readAsDataURL(blob)
       }, 'image/jpeg', 0.9)
+      src.delete(); gray.delete(); blur.delete(); edges.delete(); contours.delete(); hierarchy.delete()
     })
 
-    clearAllBtn.addEventListener('click', ()=>{
-      if(confirm('Hapus semua foto dari sesi ini?')){ images=[]; updateUI() }
-    })
+    clearAllBtn.addEventListener('click', ()=>{ if(confirm('Hapus semua foto?')){ images=[]; updateUI() } })
 
     exportBtn.addEventListener('click', async ()=>{
       if(images.length===0) return
       const blobs = await Promise.all(images.map(async (it)=> it.blob instanceof Blob ? {blob: it.blob, name: it.name} : {blob: await (await fetch(it.dataUrl)).blob(), name: it.name}))
-      try{
-        const zip = new JSZip()
-        blobs.forEach(b => zip.file(b.name, b.blob))
-        const zipBlob = await zip.generateAsync({type:'blob'})
-        const url = URL.createObjectURL(zipBlob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = 'scans_' + Date.now() + '.zip'
-        document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
-        alert('ZIP berhasil diunduh.')
-      }catch(err){
-        console.error(err)
-      }
+      const zip = new JSZip()
+      blobs.forEach(b => zip.file(b.name, b.blob))
+      const zipBlob = await zip.generateAsync({type:'blob'})
+      const url = URL.createObjectURL(zipBlob)
+      const a = document.createElement('a')
+      a.href = url; a.download = 'scans_'+Date.now()+'.zip'
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url)
     })
 
     shareBtn.addEventListener('click', async ()=>{
       if(images.length===0) return
-      const files = await Promise.all(images.map(async it=>{
-        const blob = it.blob instanceof Blob ? it.blob : await (await fetch(it.dataUrl)).blob()
-        return new File([blob], it.name, {type: 'image/jpeg'})
-      }))
+      const files = await Promise.all(images.map(async it=> new File([it.blob instanceof Blob?it.blob:await (await fetch(it.dataUrl)).blob()], it.name, {type:'image/jpeg'})))
       if(navigator.canShare && navigator.canShare({files})){
-        try{
-          await navigator.share({files, title:'Scan Photos', text:'Foto hasil scan'})
-          return
-        }catch(err){ console.warn('Share failed', err) }
+        try{ await navigator.share({files, title:'Scan Nota', text:'Hasil scan'}) }catch(err){ console.warn(err) }
+      }else{
+        alert('Share tidak didukung. Gunakan Export lalu kirim manual.')
       }
-      alert('Share langsung tidak tersedia di browser ini. Gunakan Export, lalu kirim manual ke WhatsApp/Telegram.')
     })
 
     updateUI()
